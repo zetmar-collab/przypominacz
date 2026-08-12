@@ -25,9 +25,15 @@ pojedynczy plik, nie wymaga Pythona ani instalatora. Dwuklik i ikona ląduje
 w trayu.
 
 Autostart włączasz w menu trayu (**Uruchamiaj z Windows**) — dodaje wpis do
-`HKCU\...\CurrentVersion\Run`. Exe można trzymać gdziekolwiek (`config.json`
-tworzy się obok niego); po przeniesieniu pliku odznacz i zaznacz autostart
-ponownie, żeby odświeżyć wpis.
+`HKCU\...\CurrentVersion\Run` i potwierdza to powiadomieniem. Exe można trzymać
+gdziekolwiek (`config.json` tworzy się obok niego); po przeniesieniu pliku
+program sam naprawia wpis autostartu przy najbliższym uruchomieniu.
+
+Nie trzeba (i nie warto) wrzucać niczego do folderu Autostart ręcznie —
+jeśli tam wcześniej trafił skrót, włączenie autostartu z menu go usuwa, żeby
+program nie startował dwa razy. **Nie kopiuj tam `config.json`** — Windows
+„uruchamia" wszystko z tego folderu, więc plik ustawień otworzy się przy
+każdym logowaniu w Notatniku.
 
 > Windows SmartScreen może ostrzec przy pierwszym uruchomieniu — exe nie jest
 > podpisany certyfikatem. „Więcej informacji" → „Uruchom mimo to".

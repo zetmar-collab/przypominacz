@@ -71,16 +71,28 @@ def polecenie_autostartu():
     return f'"{pythonw}" "{os.path.join(BASE_DIR, "przypominacz.py")}"'
 
 
-def autostart_wlaczony():
+def wpis_autostartu():
+    """Aktualna wartosc wpisu w rejestrze albo None."""
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as k:
-            return winreg.QueryValueEx(k, APP_NAME)[0] == polecenie_autostartu()
+            return winreg.QueryValueEx(k, APP_NAME)[0]
     except OSError:
+        return None
+
+
+def autostart_wlaczony():
+    """Wlaczony = jakikolwiek wpis wskazujacy na ten plik (bez czepiania sie cudzyslowow)."""
+    wpis = wpis_autostartu()
+    if not wpis:
         return False
+    return os.path.normcase(wpis.strip().strip('"')).startswith(
+        os.path.normcase(sys.executable if FROZEN else os.path.dirname(sys.executable)))
 
 
 def ustaw_autostart(wlacz):
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
+    """Wlacza/wylacza autostart. Blad zglasza wyjatkiem - cisza tu szkodzi."""
+    with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, RUN_KEY, 0,
+                            winreg.KEY_SET_VALUE | winreg.KEY_QUERY_VALUE) as k:
         if wlacz:
             winreg.SetValueEx(k, APP_NAME, 0, winreg.REG_SZ, polecenie_autostartu())
         else:
@@ -88,6 +100,32 @@ def ustaw_autostart(wlacz):
                 winreg.DeleteValue(k, APP_NAME)
             except FileNotFoundError:
                 pass
+    if wlacz:
+        usun_skroty_ze_startupu()
+
+
+def usun_skroty_ze_startupu():
+    """Sprzata recznie dodane skroty z folderu Autostart - inaczej program startuje dwa razy."""
+    folder = os.path.join(os.environ.get("APPDATA", ""),
+                          "Microsoft", "Windows", "Start Menu", "Programs", "Startup")
+    if not os.path.isdir(folder):
+        return
+    for nazwa in os.listdir(folder):
+        if nazwa.lower().startswith("przypominacz") and nazwa.lower().endswith(".lnk"):
+            try:
+                os.remove(os.path.join(folder, nazwa))
+            except OSError:
+                pass
+
+
+def napraw_autostart():
+    """Wpis wskazuje na stara sciezke (np. exe przeniesiony)? Popraw go po cichu."""
+    wpis = wpis_autostartu()
+    if wpis and wpis != polecenie_autostartu():
+        try:
+            ustaw_autostart(True)
+        except OSError:
+            pass
 
 
 # --- ikona ----------------------------------------------------------------
@@ -120,6 +158,8 @@ class Przypominacz:
 
         self.reset_wody()
         self.reset_przerwy()
+
+        napraw_autostart()
 
         self.ikona = pystray.Icon(APP_NAME, IKONA_AKTYWNA, APP_NAME, self.zbuduj_menu())
         threading.Thread(target=self.ikona.run, daemon=True).start()
@@ -168,7 +208,10 @@ class Przypominacz:
                 cmd = self.kolejka.get_nowait()
             except queue.Empty:
                 break
-            self.obsluz(cmd)
+            try:
+                self.obsluz(cmd)
+            except Exception as e:  # zadna akcja z menu nie moze umrzec po cichu
+                self.powiadom("Blad", f"{cmd}: {e}")
 
         if not self.pauza:
             self.woda_sek -= 1
@@ -199,7 +242,19 @@ class Przypominacz:
         elif cmd == "config":
             self.pokaz_ustawienia()
         elif cmd == "autostart":
-            ustaw_autostart(not autostart_wlaczony())
+            wlacz = not autostart_wlaczony()
+            try:
+                ustaw_autostart(wlacz)
+            except OSError as e:
+                self.powiadom("Nie udalo sie zmienic autostartu", str(e))
+                return
+            if autostart_wlaczony() == wlacz:
+                self.powiadom("Autostart " + ("wlaczony" if wlacz else "wylaczony"),
+                              "Program bedzie startowal razem z Windows." if wlacz
+                              else "Program nie bedzie juz startowal razem z Windows.")
+            else:
+                self.powiadom("Autostart bez zmian",
+                              "Windows nie przyjal wpisu - sprawdz ustawienia zabezpieczen.")
         elif cmd == "koniec":
             self.ikona.stop()
             self.root.quit()
