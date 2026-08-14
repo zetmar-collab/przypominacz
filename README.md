@@ -57,6 +57,31 @@ porzuca zmiany. Wartości lądują w `config.json` obok exe:
 Plik można też edytować ręcznie, ale wtedy zmiany wejdą dopiero po restarcie
 aplikacji — okienko jest wygodniejsze.
 
+## Wersja MSIX (Sklep Windows)
+
+```powershell
+.\Zbuduj-msix.ps1            # -> Przypominacz.msix (niepodpisany, do Partner Center)
+.\Zbuduj-msix.ps1 -Podpisz   # + podpis certyfikatem testowym do instalacji lokalnej
+```
+
+Do Partner Center wysyłasz **pakiet niepodpisany** — Sklep podpisuje go sam
+kluczem wydawcy. Dane tożsamości siedzą w [AppxManifest.xml](AppxManifest.xml)
+(`Identity/Name`, `Identity/Publisher`, `PublisherDisplayName`); przy każdej
+kolejnej wysyłce podnieś `Identity/Version` (czwarty człon zostaw jako `0`).
+
+W pakiecie aplikacja zachowuje się inaczej w dwóch miejscach, bo tego wymaga
+model MSIX:
+
+- **ustawienia** trafiają do `%LOCALAPPDATA%\Przypominacz\config.json` —
+  katalog instalacji pakietu jest tylko do odczytu,
+- **autostart** to `windows.startupTask` z manifestu (włączony domyślnie),
+  a nie wpis w rejestrze — użytkownik steruje nim w *Ustawienia → Aplikacje →
+  Uruchamianie*. Menu trayu pokazuje wtedy skrót do tego ekranu zamiast
+  własnego przełącznika.
+
+Logotypy pakietu generuje [Zrob-assety.py](Zrob-assety.py) z tej samej kropli,
+co ikona w trayu — folder `Assets` nie jest trzymany w repo.
+
 ## Budowanie ze źródeł
 
 Wymagany Python 3.10+ na Windows (testowane na 3.13 z python.org).

@@ -16,8 +16,28 @@ from PIL import Image, ImageDraw
 
 APP_NAME = "Przypominacz"
 FROZEN = getattr(sys, "frozen", False)
-# W wersji .exe config lezy obok pliku exe, nie w rozpakowanym katalogu tymczasowym.
-BASE_DIR = os.path.dirname(sys.executable) if FROZEN else os.path.dirname(os.path.abspath(__file__))
+
+
+def w_pakiecie_msix():
+    """Czy dzialamy jako zainstalowany pakiet MSIX (wersja ze Sklepu Windows)."""
+    import ctypes
+    dlugosc = ctypes.c_uint32(0)
+    # APPMODEL_ERROR_NO_PACKAGE = 15700 - brak pakietu, czyli zwykly exe
+    return ctypes.windll.kernel32.GetCurrentPackageFullName(ctypes.byref(dlugosc), None) != 15700
+
+
+MSIX = w_pakiecie_msix()
+
+if MSIX:
+    # Katalog instalacji pakietu jest tylko do odczytu - ustawienia ida do profilu.
+    BASE_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), APP_NAME)
+    os.makedirs(BASE_DIR, exist_ok=True)
+elif FROZEN:
+    # W wersji .exe config lezy obok pliku exe, nie w rozpakowanym katalogu tymczasowym.
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
@@ -120,6 +140,8 @@ def usun_skroty_ze_startupu():
 
 def napraw_autostart():
     """Wpis wskazuje na stara sciezke (np. exe przeniesiony)? Popraw go po cichu."""
+    if MSIX:
+        return  # w pakiecie autostartem zarzadza Windows (StartupTask z manifestu)
     wpis = wpis_autostartu()
     if wpis and wpis != polecenie_autostartu():
         try:
@@ -195,6 +217,8 @@ class Przypominacz:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Pauza", lambda: self.kolejka.put("pauza"), checked=lambda i: self.pauza),
             pystray.MenuItem("Ustawienia...", lambda: self.kolejka.put("config")),
+            pystray.MenuItem("Autostart - ustawienia Windows", lambda: self.kolejka.put("startupapps"))
+            if MSIX else
             pystray.MenuItem("Uruchamiaj z Windows", lambda: self.kolejka.put("autostart"),
                              checked=lambda i: autostart_wlaczony()),
             pystray.Menu.SEPARATOR,
@@ -241,6 +265,8 @@ class Przypominacz:
             self.ikona.icon = IKONA_PAUZA if self.pauza else IKONA_AKTYWNA
         elif cmd == "config":
             self.pokaz_ustawienia()
+        elif cmd == "startupapps":
+            os.startfile("ms-settings:startupapps")
         elif cmd == "autostart":
             wlacz = not autostart_wlaczony()
             try:
