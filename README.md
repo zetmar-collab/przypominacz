@@ -3,6 +3,9 @@
 Mała aplikacja w zasobniku systemowym (tray), która przypomina o piciu wody
 i o 5-minutowej przerwie od komputera.
 
+[![Sklep Windows](https://img.shields.io/badge/Sklep_Windows-pobierz-0078D4?style=for-the-badge&logo=microsoftstore&logoColor=white)](https://apps.microsoft.com/detail/9NWV99ZZVJ4Z)
+[![Licencja MIT](https://img.shields.io/badge/licencja-MIT-green?style=for-the-badge)](LICENSE)
+
 ## Co potrafi
 
 - **Woda** — co 30 min (domyślnie) powiadomienie Windows + dźwięk.
@@ -19,12 +22,20 @@ i o 5-minutowej przerwie od komputera.
 
 ## Instalacja
 
-Pobierz **`Przypominacz.exe`** z zakładki
-[Releases](https://github.com/zetmar-collab/przypominacz/releases) — to
-pojedynczy plik, nie wymaga Pythona ani instalatora. Dwuklik i ikona ląduje
-w trayu.
+**Zalecane — Sklep Windows:**
+[apps.microsoft.com/detail/9NWV99ZZVJ4Z](https://apps.microsoft.com/detail/9NWV99ZZVJ4Z)
+Instalacja jednym kliknięciem, automatyczne aktualizacje, podpis Microsoftu
+(bez ostrzeżenia SmartScreen). Autostart w wersji ze Sklepu włączony jest
+domyślnie — wyłączysz go w *Ustawienia → Aplikacje → Uruchamianie*, a menu
+trayu prowadzi wprost do tego ekranu.
 
-Autostart włączasz w menu trayu (**Uruchamiaj z Windows**) — dodaje wpis do
+**Alternatywnie — pojedynczy plik:** pobierz `Przypominacz.exe` z zakładki
+[Releases](https://github.com/zetmar-collab/przypominacz/releases). Nie wymaga
+Pythona ani instalatora — dwuklik i ikona ląduje w trayu. Ta wersja nie jest
+podpisana certyfikatem, więc przy pierwszym uruchomieniu Windows SmartScreen
+może ostrzec („Więcej informacji" → „Uruchom mimo to").
+
+W wersji z pliku exe autostart włączasz w menu trayu (**Uruchamiaj z Windows**) — dodaje wpis do
 `HKCU\...\CurrentVersion\Run` i potwierdza to powiadomieniem. Exe można trzymać
 gdziekolwiek (`config.json` tworzy się obok niego); po przeniesieniu pliku
 program sam naprawia wpis autostartu przy najbliższym uruchomieniu.
@@ -35,14 +46,12 @@ program nie startował dwa razy. **Nie kopiuj tam `config.json`** — Windows
 „uruchamia" wszystko z tego folderu, więc plik ustawień otworzy się przy
 każdym logowaniu w Notatniku.
 
-> Windows SmartScreen może ostrzec przy pierwszym uruchomieniu — exe nie jest
-> podpisany certyfikatem. „Więcej informacji" → „Uruchom mimo to".
-
 ## Ustawienia
 
 Prawy klik na ikonę → **Ustawienia…** Okienko ma pola na wszystkie opcje,
 przycisk **Zapisz** od razu je stosuje (liczniki startują od nowa), **Anuluj**
-porzuca zmiany. Wartości lądują w `config.json` obok exe:
+porzuca zmiany. Wartości lądują w `config.json` — w wersji ze Sklepu
+w `%LOCALAPPDATA%\Przypominacz\`, w wersji z pliku exe obok programu:
 
 | Klucz | Znaczenie | Domyślnie |
 |---|---|---|
