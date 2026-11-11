@@ -40,8 +40,20 @@ if ($LASTEXITCODE -ne 0) { throw "makeappx zwrocil blad $LASTEXITCODE" }
 
 # 5. Opcjonalny podpis testowy (tylko do sprawdzenia instalacji u siebie)
 if ($Podpisz) {
+    # Podpisujemy KOPIE. Pakiet dla Partner Center musi zostac niepodpisany,
+    # inaczej latwo wyslac do Sklepu plik z certyfikatem testowym.
+    $msixTest = ".\Przypominacz-test.msix"
+    Copy-Item $msix $msixTest -Force
+    $msix = $msixTest
+
     $cn = ([xml](Get-Content .\AppxManifest.xml)).Package.Identity.Publisher
-    $cert = Get-ChildItem Cert:\CurrentUser\My | Where-Object { $_.Subject -eq $cn } | Select-Object -First 1
+
+    # Z kilku pasujacych bierzemy ten wazny najdluzej - "pierwszy z brzegu"
+    # potrafil wskazac certyfikat, ktory wlasnie wygasa.
+    $cert = Get-ChildItem Cert:\CurrentUser\My |
+        Where-Object { $_.Subject -eq $cn -and $_.HasPrivateKey -and $_.NotAfter -gt (Get-Date) } |
+        Sort-Object NotAfter -Descending | Select-Object -First 1
+
     if (-not $cert) {
         $cert = New-SelfSignedCertificate -Type Custom -Subject $cn -KeyUsage DigitalSignature `
             -FriendlyName "Przypominacz test" -CertStoreLocation "Cert:\CurrentUser\My" `
@@ -50,10 +62,28 @@ if ($Podpisz) {
         Write-Host "  Export-Certificate -Cert Cert:\CurrentUser\My\$($cert.Thumbprint) -FilePath test.cer"
         Write-Host "  Import-Certificate -FilePath test.cer -CertStoreLocation Cert:\LocalMachine\TrustedPeople"
     }
+
+    Write-Host "Podpisuje certyfikatem $($cert.Thumbprint) (wazny do $($cert.NotAfter.ToString('yyyy-MM-dd')))"
     & $signtool sign /fd SHA256 /a /sha1 $cert.Thumbprint $msix
     if ($LASTEXITCODE -ne 0) { throw "signtool zwrocil blad $LASTEXITCODE" }
+
+    & $signtool verify /pa /v $msix
+    if ($LASTEXITCODE -ne 0) { throw "podpis nie przechodzi weryfikacji ($LASTEXITCODE)" }
+
+    $zaufany = Get-ChildItem Cert:\LocalMachine\TrustedPeople -ErrorAction SilentlyContinue |
+        Where-Object { $_.Thumbprint -eq $cert.Thumbprint }
+    if ($zaufany) {
+        Write-Host "Certyfikat jest zaufany - instalacja: Add-AppxPackage .\Przypominacz-test.msix"
+    } else {
+        Write-Host "UWAGA: certyfikatu nie ma w LocalMachine\TrustedPeople - instalacja odmowi."
+    }
 }
 
 Write-Host ""
-Write-Host "Gotowe: $((Resolve-Path $msix).Path)"
-Write-Host "Do Partner Center wysylasz WERSJE NIEPODPISANA - Sklep podpisuje pakiet sam."
+if ($Podpisz) {
+    Write-Host "Podpisany do testow: $((Resolve-Path $msixTest).Path)"
+    Write-Host "Dla Partner Center (niepodpisany): $((Resolve-Path '.\Przypominacz.msix').Path)"
+} else {
+    Write-Host "Gotowe: $((Resolve-Path $msix).Path)"
+    Write-Host "Do Partner Center wysylasz WERSJE NIEPODPISANA - Sklep podpisuje pakiet sam."
+}
