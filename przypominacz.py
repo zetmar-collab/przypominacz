@@ -77,14 +77,27 @@ LIMITY = {
 # O tyle odkladamy przypomnienie, gdy akurat nie wypada przeszkadzac.
 ODROCZENIE = 60
 
-# Paleta w jednym miejscu - wczesniej te same kolory byly wpisane w osmiu.
+# Paleta w jednym miejscu. Kontrasty policzone wzgledem TLA wg WCAG:
+# TEKST 14.9:1, OPIS 7.9:1, PRZYGASZONY 4.7:1, BLAD 5.3:1, AKCENT 4.7:1 (element
+# nietekstowy), bialy napis na AKCENT_PRZYCISK 5.3:1.
 TLO = "#1b2838"
 TEKST = "#ffffff"
 OPIS = "#a8c0d6"
+PRZYGASZONY = "#7f93a6"
 AKCENT = "#3498db"
+AKCENT_PRZYCISK = "#1f6391"
 POLE = "#2c3e50"
 PRZYCISK = "#34495e"
-BLAD = "#e74c3c"
+LINIA = "#2c3e50"
+BLAD = "#ef7566"
+
+# Skala rozmiarow pisma - zamiast przypadkowych wartosci w kazdym miejscu.
+PISMO = ("Segoe UI", 10)
+PISMO_MALE = ("Segoe UI", 9)
+PISMO_SEKCJA = ("Segoe UI", 9, "bold")
+PISMO_NAGLOWEK = ("Segoe UI", 16, "bold")
+PISMO_HERO = ("Segoe UI", 20, "bold")
+PISMO_ZEGAR = ("Segoe UI", 40, "bold")
 
 log = logging.getLogger(APP_NAME)
 
@@ -300,6 +313,83 @@ IKONA_AKTYWNA = zrob_ikone((41, 128, 185, 255))
 IKONA_PAUZA = zrob_ikone((127, 140, 141, 255))
 
 
+# --- wyglad okien ----------------------------------------------------------
+
+def rozjasnij(kolor, o=0.10):
+    """Jasniejszy wariant koloru na stan pod kursorem."""
+    r, g, b = (int(kolor[i:i + 2], 16) for i in (1, 3, 5))
+    return "#%02x%02x%02x" % tuple(min(255, round(k + (255 - k) * o)) for k in (r, g, b))
+
+
+_ikona_okna = None
+
+
+def ustaw_ikone_okna(okno):
+    """Bez tego okna pokazuja domyslne pioro Tk zamiast ikony programu."""
+    global _ikona_okna
+    try:
+        from PIL import ImageTk
+        if _ikona_okna is None:
+            _ikona_okna = ImageTk.PhotoImage(IKONA_AKTYWNA)
+        okno.iconphoto(False, _ikona_okna)
+    except Exception as e:
+        log.debug("Nie udalo sie ustawic ikony okna: %s", e)
+
+
+def ciemny_pasek_tytulu(okno):
+    """Jasny pasek tytulu nad ciemnym oknem wyglada jak pomylka - prosimy o ciemny."""
+    try:
+        import ctypes
+        okno.update_idletasks()
+        uchwyt = ctypes.windll.user32.GetParent(okno.winfo_id())
+        wlacz = ctypes.c_int(1)
+        # DWMWA_USE_IMMERSIVE_DARK_MODE: 20 w nowszych Windows, 19 w starszych
+        for atrybut in (20, 19):
+            if ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    uchwyt, atrybut, ctypes.byref(wlacz), ctypes.sizeof(wlacz)) == 0:
+                return
+    except Exception as e:
+        log.debug("Nie udalo sie przyciemnic paska tytulu: %s", e)
+
+
+def dopasuj_wysokosc(okno, szer):
+    """Wysokosc z zawartosci, a nie wpisana na sztywno.
+
+    Przy wpisanej wysokosci dolozenie jednego wiersza wypycha przyciski poza
+    ekran, a przy innym skalowaniu pisma dzieje sie to samo bez zmian w kodzie.
+    """
+    okno.update_idletasks()
+    wys = okno.winfo_reqheight()
+    x = (okno.winfo_screenwidth() - szer) // 2
+    y = max(0, (okno.winfo_screenheight() - wys) // 3)
+    okno.geometry(f"{szer}x{wys}+{x}+{y}")
+
+
+def przygotuj_okno(okno, tytul, szer, wys, zamknij):
+    """Wspolny szkielet obu okien: tytul, ikona, pozycja, Escape."""
+    okno.title(tytul)
+    okno.configure(bg=TLO)
+    okno.attributes("-topmost", True)
+    okno.resizable(False, False)
+    okno.protocol("WM_DELETE_WINDOW", zamknij)
+    okno.bind("<Escape>", lambda _: zamknij())
+    x = (okno.winfo_screenwidth() - szer) // 2
+    y = (okno.winfo_screenheight() - wys) // 3
+    okno.geometry(f"{szer}x{wys}+{x}+{y}")
+    ustaw_ikone_okna(okno)
+    ciemny_pasek_tytulu(okno)
+
+
+def przycisk(rodzic, tekst, polecenie, glowny=False):
+    """Przycisk ze stanem pod kursorem i widoczna obwodka przy obsludze klawiatura."""
+    tlo = AKCENT_PRZYCISK if glowny else PRZYCISK
+    return tk.Button(rodzic, text=tekst, command=polecenie, font=PISMO,
+                     relief="flat", bd=0, bg=tlo, fg=TEKST,
+                     activebackground=rozjasnij(tlo), activeforeground=TEKST,
+                     cursor="hand2", padx=16, pady=7,
+                     highlightthickness=2, highlightbackground=TLO, highlightcolor=AKCENT)
+
+
 # --- aplikacja ------------------------------------------------------------
 
 class Przypominacz:
@@ -361,16 +451,16 @@ class Przypominacz:
                              None, enabled=False),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Przypomnij o wodzie teraz", lambda: self.kolejka.put("woda")),
-            pystray.MenuItem("Zrob przerwe teraz", lambda: self.kolejka.put("przerwa")),
+            pystray.MenuItem("Zrób przerwę teraz", lambda: self.kolejka.put("przerwa")),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Pauza", lambda: self.kolejka.put("pauza"), checked=lambda i: self.pauza),
             pystray.MenuItem("Ustawienia...", lambda: self.kolejka.put("config")),
-            pystray.MenuItem("Autostart - ustawienia Windows", lambda: self.kolejka.put("startupapps"))
+            pystray.MenuItem("Autostart — ustawienia Windows", lambda: self.kolejka.put("startupapps"))
             if MSIX else
             pystray.MenuItem("Uruchamiaj z Windows", lambda: self.kolejka.put("autostart"),
                              checked=lambda i: autostart_wlaczony()),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Zakoncz", lambda: self.kolejka.put("koniec")),
+            pystray.MenuItem("Zakończ", lambda: self.kolejka.put("koniec")),
         )
 
     # --- petla glowna ---
@@ -383,7 +473,7 @@ class Przypominacz:
             try:
                 self.obsluz(cmd)
             except Exception as e:  # zadna akcja z menu nie moze umrzec po cichu
-                self.powiadom("Blad", f"{cmd}: {e}")
+                self.powiadom("Błąd", f"{cmd}: {e}")
 
         teraz = time.time()
         odstep = teraz - self.ostatni_tik
@@ -467,15 +557,15 @@ class Przypominacz:
             try:
                 ustaw_autostart(wlacz)
             except OSError as e:
-                self.powiadom("Nie udalo sie zmienic autostartu", str(e))
+                self.powiadom("Nie udało się zmienić autostartu", str(e))
                 return
             if autostart_wlaczony() == wlacz:
-                self.powiadom("Autostart " + ("wlaczony" if wlacz else "wylaczony"),
-                              "Program bedzie startowal razem z Windows." if wlacz
-                              else "Program nie bedzie juz startowal razem z Windows.")
+                self.powiadom("Autostart " + ("włączony" if wlacz else "wyłączony"),
+                              "Program będzie startował razem z Windows." if wlacz
+                              else "Program nie będzie już startował razem z Windows.")
             else:
                 self.powiadom("Autostart bez zmian",
-                              "Windows nie przyjal wpisu - sprawdz ustawienia zabezpieczen.")
+                              "Windows nie przyjął wpisu — sprawdź ustawienia zabezpieczeń.")
         elif cmd == "koniec":
             self.ikona.stop()
             self.root.quit()
@@ -490,7 +580,7 @@ class Przypominacz:
             winsound.MessageBeep(winsound.MB_ICONASTERISK)
 
     def przypomnij_wode(self):
-        self.powiadom("Czas na wode", "Wypij szklanke wody - nawodnij sie i wroc do pracy.")
+        self.powiadom("Czas na wodę", "Wypij szklankę wody — nawodnij się i wróć do pracy.")
 
     # --- okno ustawien ---
     def pokaz_ustawienia(self):
@@ -501,15 +591,6 @@ class Przypominacz:
 
         win = tk.Toplevel(self.root)
         self.okno_ustawien = win
-        win.title(f"{APP_NAME} - ustawienia")
-        win.configure(bg=TLO)
-        win.attributes("-topmost", True)
-        win.resizable(False, False)
-
-        szer, wys = 420, 530
-        x = (win.winfo_screenwidth() - szer) // 2
-        y = (win.winfo_screenheight() - wys) // 3
-        win.geometry(f"{szer}x{wys}+{x}+{y}")
 
         def zamknij():
             self.okno_ustawien = None
@@ -518,73 +599,85 @@ class Przypominacz:
             except tk.TclError:
                 pass
 
-        win.protocol("WM_DELETE_WINDOW", zamknij)
+        przygotuj_okno(win, f"{APP_NAME} - ustawienia", 440, 560, zamknij)
 
         tk.Label(win, text="Ustawienia", bg=TLO, fg=TEKST,
-                 font=("Segoe UI", 16, "bold")).pack(pady=(18, 12))
+                 font=PISMO_NAGLOWEK).pack(pady=(16, 10))
 
         siatka = tk.Frame(win, bg=TLO)
-        siatka.pack(padx=26, fill="x")
+        siatka.pack(padx=28, fill="x")
+        siatka.columnconfigure(0, weight=1)
 
         zmienne = {}
         etykiety = {}
 
+        def sekcja(wiersz, tytul):
+            """Naglowek grupy - 11 wierszy pod rzad czyta sie zle."""
+            ramka = tk.Frame(siatka, bg=TLO)
+            ramka.grid(row=wiersz, column=0, columnspan=2, sticky="ew", pady=(12, 4))
+            tk.Label(ramka, text=tytul.upper(), bg=TLO, fg=PRZYGASZONY,
+                     font=PISMO_SEKCJA).pack(side="left")
+            tk.Frame(ramka, bg=LINIA, height=1).pack(side="left", fill="x",
+                                                     expand=True, padx=(10, 0), pady=(2, 0))
+
         def pole(wiersz, etykieta, klucz):
             dol, gora = LIMITY[klucz]
             etykiety[klucz] = etykieta
-            tk.Label(siatka, text=etykieta, bg=TLO, fg=OPIS, font=("Segoe UI", 10),
-                     anchor="w").grid(row=wiersz, column=0, sticky="w", pady=5)
+            tk.Label(siatka, text=etykieta, bg=TLO, fg=OPIS, font=PISMO,
+                     anchor="w").grid(row=wiersz, column=0, sticky="w", pady=3)
             v = tk.StringVar(value=str(self.cfg[klucz]))
             zmienne[klucz] = v
-            tk.Spinbox(siatka, from_=dol, to=gora, textvariable=v, width=6, justify="center",
-                       font=("Segoe UI", 10), relief="flat", bg=POLE, fg=TEKST,
-                       buttonbackground=PRZYCISK, insertbackground=TEKST).grid(
-                row=wiersz, column=1, sticky="e", pady=5)
+            tk.Spinbox(siatka, from_=dol, to=gora, textvariable=v, width=5, justify="center",
+                       font=PISMO, relief="flat", bd=0, bg=POLE, fg=TEKST,
+                       buttonbackground=PRZYCISK, insertbackground=TEKST,
+                       readonlybackground=POLE, highlightthickness=1,
+                       highlightbackground=LINIA, highlightcolor=AKCENT).grid(
+                row=wiersz, column=1, sticky="e", pady=3, ipady=2)
 
-        siatka.columnconfigure(0, weight=1)
-        pole(0, "Woda co ile minut", "wodaMinuty")
-        pole(1, "Przerwa co ile minut", "przerwaMinuty")
-        pole(2, "Dlugosc przerwy (minuty)", "przerwaDlugoscMinut")
-        pole(3, "Drzemka - odloz o (minuty)", "drzemkaMinuty")
+        def przelacznik(wiersz, tekst, zmienna):
+            tk.Checkbutton(siatka, text=tekst, variable=zmienna, bg=TLO, fg=OPIS,
+                           selectcolor=POLE, activebackground=TLO, activeforeground=TEKST,
+                           font=PISMO, anchor="w", cursor="hand2",
+                           highlightthickness=1, highlightbackground=TLO,
+                           highlightcolor=AKCENT, bd=0).grid(
+                row=wiersz, column=0, columnspan=2, sticky="w", pady=1)
 
         dzwiek = tk.BooleanVar(value=self.cfg["dzwiek"])
         cisza = tk.BooleanVar(value=self.cfg["cichaPoraWlaczona"])
-        for wiersz, (txt, var) in enumerate([("Dzwiek przy przypomnieniach", dzwiek),
-                                             ("Cicha pora (bez przypomnien)", cisza)], start=4):
-            tk.Checkbutton(siatka, text=txt, variable=var, bg=TLO, fg=OPIS, selectcolor=POLE,
-                           activebackground=TLO, activeforeground=TEKST, font=("Segoe UI", 10),
-                           anchor="w", highlightthickness=0, bd=0).grid(
-                row=wiersz, column=0, columnspan=2, sticky="w", pady=3)
-
-        pole(6, "Cicha pora od godziny", "cichaPoraOd")
-        pole(7, "Cicha pora do godziny", "cichaPoraDo")
-
         bezczynnosc = tk.BooleanVar(value=self.cfg["bezczynnoscWlaczona"])
         pelny_ekran = tk.BooleanVar(value=self.cfg["szanujPelnyEkran"])
-        for wiersz, (txt, var) in enumerate(
-                [("Wstrzymaj liczenie, gdy odchodze od komputera", bezczynnosc),
-                 ("Nie przerywaj prezentacji i pelnego ekranu", pelny_ekran)], start=8):
-            tk.Checkbutton(siatka, text=txt, variable=var, bg=TLO, fg=OPIS, selectcolor=POLE,
-                           activebackground=TLO, activeforeground=TEKST, font=("Segoe UI", 10),
-                           anchor="w", highlightthickness=0, bd=0).grid(
-                row=wiersz, column=0, columnspan=2, sticky="w", pady=3)
 
-        pole(10, "Nieobecnosc liczy sie po (minuty)", "bezczynnoscMinuty")
+        sekcja(0, "Przypomnienia")
+        pole(1, "Woda co ile minut", "wodaMinuty")
+        pole(2, "Przerwa co ile minut", "przerwaMinuty")
+        pole(3, "Długość przerwy (minuty)", "przerwaDlugoscMinut")
+        pole(4, "Drzemka — odłóż o (minuty)", "drzemkaMinuty")
+        przelacznik(5, "Dźwięk przy przypomnieniach", dzwiek)
 
-        blad = tk.Label(win, text="", bg=TLO, fg=BLAD, font=("Segoe UI", 9), wraplength=360)
-        blad.pack(pady=(8, 0))
+        sekcja(6, "Cisza")
+        przelacznik(7, "Cicha pora (bez przypomnień)", cisza)
+        pole(8, "Cicha pora od godziny", "cichaPoraOd")
+        pole(9, "Cicha pora do godziny", "cichaPoraDo")
 
-        def zapisz():
+        sekcja(10, "Gdy Cię nie ma")
+        przelacznik(11, "Wstrzymaj liczenie, gdy odchodzę od komputera", bezczynnosc)
+        przelacznik(12, "Nie przerywaj prezentacji i pełnego ekranu", pelny_ekran)
+        pole(13, "Nieobecność liczy się po (minuty)", "bezczynnoscMinuty")
+
+        blad = tk.Label(win, text="", bg=TLO, fg=BLAD, font=PISMO_MALE, wraplength=380)
+        blad.pack(pady=(10, 0))
+
+        def zapisz(*_):
             nowy = dict(self.cfg)
             for klucz, v in zmienne.items():
                 dol, gora = LIMITY[klucz]
                 try:
                     liczba = int(v.get())
                 except ValueError:
-                    blad.config(text="Wszystkie pola musza byc liczbami.")
+                    blad.config(text="Wszystkie pola muszą być liczbami.")
                     return
                 if not dol <= liczba <= gora:
-                    # Spinbox ogranicza strzalki, ale nie wpisywanie z klawiatury.
+                    # Spinbox ogranicza strzałki, ale nie wpisywanie z klawiatury.
                     blad.config(text=f"{etykiety[klucz]}: dozwolone {dol}-{gora}, "
                                      f"a wpisano {liczba}.")
                     return
@@ -595,11 +688,11 @@ class Przypominacz:
             nowy["szanujPelnyEkran"] = pelny_ekran.get()
 
             if not zapisz_config(nowy):
-                blad.config(text="Nie udalo sie zapisac ustawien - szczegoly w pliku log.")
+                blad.config(text="Nie udało się zapisać ustawień — szczegóły w pliku log.")
                 return
 
-            # Liczniki zerujemy tylko dla interwalu, ktory faktycznie sie zmienil:
-            # zmiana samego dzwieku nie moze kasowac 29 minut odliczania do wody.
+            # Liczniki zerujemy tylko dla interwału, który faktycznie się zmienił:
+            # zmiana samego dźwięku nie może kasować 29 minut odliczania do wody.
             stary = self.cfg
             self.cfg = wczytaj_config()
             if self.cfg["wodaMinuty"] != stary["wodaMinuty"]:
@@ -608,62 +701,57 @@ class Przypominacz:
                 self.reset_przerwy()
             zamknij()
             self.powiadom("Ustawienia zapisane",
-                          f"Woda co {self.cfg['wodaMinuty']} min, przerwa co {self.cfg['przerwaMinuty']} min.")
+                          f"Woda co {self.cfg['wodaMinuty']} min, "
+                          f"przerwa co {self.cfg['przerwaMinuty']} min.")
 
         ramka = tk.Frame(win, bg=TLO)
         ramka.pack(pady=(14, 0))
-        tk.Button(ramka, text="Anuluj", width=14, font=("Segoe UI", 10), relief="flat",
-                  bg=PRZYCISK, fg=TEKST, command=zamknij).pack(side="left", padx=6)
-        tk.Button(ramka, text="Zapisz", width=14, font=("Segoe UI", 10), relief="flat",
-                  bg=AKCENT, fg=TEKST, command=zapisz).pack(side="left", padx=6)
+        przycisk(ramka, "Anuluj", zamknij).pack(side="left", padx=6)
+        zapisz_btn = przycisk(ramka, "Zapisz", zapisz, glowny=True)
+        zapisz_btn.pack(side="left", padx=6)
 
-        tk.Label(win, text=f"wersja {__version__}", bg=TLO, fg=PRZYCISK,
-                 font=("Segoe UI", 8)).pack(side="bottom", pady=6)
+        tk.Label(win, text=f"wersja {__version__}", bg=TLO, fg=PRZYGASZONY,
+                 font=PISMO_MALE).pack(side="bottom", pady=(8, 12))
 
+        win.bind("<Return>", zapisz)
+        dopasuj_wysokosc(win, 440)
         win.lift()
         win.focus_force()
+        zapisz_btn.focus_set()
 
     # --- okno przerwy ---
     def pokaz_przerwe(self):
-        if self.okno_przerwy is not None and tk.Toplevel.winfo_exists(self.okno_przerwy):
+        if self.okno_przerwy is not None and self.okno_przerwy.winfo_exists():
             return
         if self.cfg["dzwiek"]:
             winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
 
         win = tk.Toplevel(self.root)
         self.okno_przerwy = win
-        win.title(f"{APP_NAME} - przerwa")
-        win.configure(bg=TLO)
-        win.attributes("-topmost", True)
-        win.resizable(False, False)
-        win.protocol("WM_DELETE_WINDOW", lambda: self.zamknij_przerwe(win))
+        przygotuj_okno(win, f"{APP_NAME} - przerwa", 480, 300,
+                       lambda: self.zamknij_przerwe(win))
 
-        szer, wys = 460, 260
-        x = (win.winfo_screenwidth() - szer) // 2
-        y = (win.winfo_screenheight() - wys) // 3
-        win.geometry(f"{szer}x{wys}+{x}+{y}")
-
-        tk.Label(win, text="Czas na przerwe", bg=TLO, fg=TEKST,
-                 font=("Segoe UI", 20, "bold")).pack(pady=(26, 4))
-        tk.Label(win, text="Wstan, rozciagnij sie, odwroc wzrok od ekranu.",
+        tk.Label(win, text="Czas na przerwę", bg=TLO, fg=TEKST,
+                 font=PISMO_HERO).pack(pady=(28, 6))
+        tk.Label(win, text="Wstań, rozciągnij się, odwróć wzrok od ekranu.",
                  bg=TLO, fg=OPIS, font=("Segoe UI", 11)).pack()
 
         pozostalo = [self.cfg["przerwaDlugoscMinut"] * 60]
         zegar = tk.Label(win, text=self.fmt(pozostalo[0]), bg=TLO, fg=AKCENT,
-                         font=("Segoe UI", 40, "bold"))
-        zegar.pack(pady=10)
+                         font=PISMO_ZEGAR)
+        zegar.pack(pady=(14, 2))
+        tk.Label(win, text="Okno zamknie się samo.", bg=TLO, fg=PRZYGASZONY,
+                 font=PISMO_MALE).pack()
 
         ramka = tk.Frame(win, bg=TLO)
-        ramka.pack(pady=(4, 0))
-        tk.Button(ramka, text=f"Odloz o {self.cfg['drzemkaMinuty']} min", width=18,
-                  font=("Segoe UI", 10), relief="flat", bg=PRZYCISK, fg=TEKST,
-                  command=lambda: self.drzemka(win)).pack(side="left", padx=6)
-        tk.Button(ramka, text="Zamknij", width=14, font=("Segoe UI", 10), relief="flat",
-                  bg=AKCENT, fg=TEKST,
-                  command=lambda: self.zamknij_przerwe(win)).pack(side="left", padx=6)
+        ramka.pack(pady=(16, 24))
+        # Oba przyciski sa drugorzedne: akcent nalezy do zegara, a nie do pomijania przerwy.
+        przycisk(ramka, f"Odłóż o {self.cfg['drzemkaMinuty']} min",
+                 lambda: self.drzemka(win)).pack(side="left", padx=6)
+        przycisk(ramka, "Zamknij", lambda: self.zamknij_przerwe(win)).pack(side="left", padx=6)
 
         def odliczaj():
-            if not tk.Toplevel.winfo_exists(win):
+            if not win.winfo_exists():
                 return
             pozostalo[0] -= 1
             if pozostalo[0] <= 0:
@@ -671,11 +759,12 @@ class Przypominacz:
                 if self.cfg["dzwiek"]:
                     winsound.MessageBeep(winsound.MB_ICONASTERISK)
                 self.zamknij_przerwe(win)
-                self.powiadom("Przerwa zakonczona", "Mozesz wracac do pracy.")
+                self.powiadom("Przerwa zakończona", "Możesz wracać do pracy.")
                 return
             zegar.config(text=self.fmt(pozostalo[0]))
             win.after(1000, odliczaj)
 
+        dopasuj_wysokosc(win, 480)
         win.after(1000, odliczaj)
         # Samo podniesienie okna. focus_force() wyrywal fokus w trakcie pisania,
         # a spacja albo Enter trafialy wtedy w przycisk "Zamknij".

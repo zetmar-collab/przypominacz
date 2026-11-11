@@ -89,7 +89,7 @@ def test_tekst_zamiast_liczby_jest_odrzucany(app):
     app.root.update()
     assert app.okno_ustawien is not None          # okno zostaje otwarte
     czerwone = [w for w in app.okno_ustawien.winfo_children()
-                if w.winfo_class() == "Label" and w.cget("fg") == "#e74c3c"]
+                if w.winfo_class() == "Label" and w.cget("fg") == p.BLAD]
     assert czerwone and czerwone[0].cget("text")  # widoczny komunikat bledu
 
 

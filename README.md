@@ -121,9 +121,10 @@ co ikona w trayu — folder `Assets` nie jest trzymany w repo.
 .\.venv\Scripts\python.exe -m pytest tests -q
 ```
 
-53 testy pokrywają wczytywanie i zapis ustawień (w tym katalog bez prawa
+62 testy pokrywają wczytywanie i zapis ustawień (w tym katalog bez prawa
 zapisu i uszkodzony JSON), odliczanie wobec zegara, wybudzenie komputera,
-pauzę, cichą porę, autostart w rejestrze oraz oba okna.
+pauzę, cichą porę, wykrywanie nieobecności, autostart w rejestrze, oba okna
+oraz kontrast palety wg WCAG.
 
 ## Budowanie ze źródeł
 
@@ -147,6 +148,9 @@ Techniczne szczegóły:
 - odliczanie do terminu wg zegara, więc uśpienie komputera nie gubi czasu,
 - jedna instancja pilnowana mutexem w przestrzeni `Local` (per sesja),
 - numer wersji pochodzi z `__version__` i trafia do zasobów exe oraz manifestu,
+- ciemny motyw okien: kontrast tekstu min. 4,5:1 (pilnuje tego test), własna
+  ikona okien, ciemny pasek tytułu, obsługa Esc i Enter, widoczna obwódka
+  zaznaczenia przy pracy z klawiatury,
 - autostart: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` → `Przypominacz`.
 
 ## Licencja

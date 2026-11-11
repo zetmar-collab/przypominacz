@@ -6,6 +6,7 @@ Otwiera kolejno okna aplikacji, wycina je z ekranu i sklada na ciemnym tle.
 
 import ctypes
 import os
+import time
 import sys
 import tkinter as tk
 from ctypes import wintypes
@@ -32,8 +33,14 @@ def tlo():
 
 def zrzut_okna(okno):
     """Przechwytuje same piksele okna (PrintWindow) - bez pulpitu i cudzych okien."""
+    # Bez chwili zwloki PrintWindow lapie okno, zanim kontrolki sie odmaluja,
+    # i czesc pol znika ze zrzutu.
     okno.update_idletasks()
     okno.update()
+    koniec = time.time() + 0.8
+    while time.time() < koniec:
+        okno.update()
+        time.sleep(0.05)
     hwnd = int(okno.wm_frame(), 16)
 
     user32, gdi32 = ctypes.windll.user32, ctypes.windll.gdi32
@@ -72,7 +79,12 @@ def zrzut_okna(okno):
 
 def zloz(okno, nazwa, skala=1.0):
     wyciete = zrzut_okna(okno)
-    if skala != 1.0:
+    # Skala tak, by okno zmiescilo sie w kadrze z marginesem - inaczej wysokie
+    # okno zostaje przyciete i zrzut nie pokazuje przyciskow.
+    margines = 0.88
+    skala = min(skala, PLOTNO[0] * margines / wyciete.width,
+                PLOTNO[1] * margines / wyciete.height)
+    if abs(skala - 1.0) > 0.01:
         wyciete = wyciete.resize((round(wyciete.width * skala), round(wyciete.height * skala)),
                                  Image.LANCZOS)
     plotno = tlo()
@@ -90,7 +102,9 @@ def main():
     app.okno_przerwy = app.okno_ustawien = None
     app.root = tk.Tk()
     app.root.withdraw()
-    app.woda_sek = app.przerwa_sek = 600
+    app.reset_wody()
+    app.reset_przerwy()
+    app.ostatni_tik = time.time()
     app.powiadom = lambda *a: None
 
     app.pokaz_przerwe()
