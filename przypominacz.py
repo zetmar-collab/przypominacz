@@ -2,19 +2,23 @@
 """Przypominacz - tray'owy przypominacz o wodzie i przerwach od komputera."""
 
 import json
+import logging
 import os
 import queue
 import sys
 import threading
+import time
 import tkinter as tk
 import winreg
 import winsound
 from datetime import datetime
+from logging.handlers import RotatingFileHandler
 
 import pystray
 from PIL import Image, ImageDraw
 
 APP_NAME = "Przypominacz"
+__version__ = "1.2.0"
 FROZEN = getattr(sys, "frozen", False)
 
 
@@ -28,18 +32,19 @@ def w_pakiecie_msix():
 
 MSIX = w_pakiecie_msix()
 
-if MSIX:
-    # Katalog instalacji pakietu jest tylko do odczytu - ustawienia ida do profilu.
-    BASE_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), APP_NAME)
-    os.makedirs(BASE_DIR, exist_ok=True)
-elif FROZEN:
-    # W wersji .exe config lezy obok pliku exe, nie w rozpakowanym katalogu tymczasowym.
-    BASE_DIR = os.path.dirname(sys.executable)
-else:
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
+# Dane uzytkownika zawsze w profilu. Katalog instalacji bywa tylko do odczytu
+# (pakiet MSIX, Program Files, dysk sieciowy), a nieudany zapis zabijal start.
+DANE_DIR = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), APP_NAME)
+CONFIG_PATH = os.path.join(DANE_DIR, "config.json")
+LOG_PATH = os.path.join(DANE_DIR, "przypominacz.log")
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+
+# Katalog samego programu (exe albo skryptu) - potrzebny do autostartu i migracji.
+KATALOG_PROGRAMU = (os.path.dirname(sys.executable) if FROZEN
+                    else os.path.dirname(os.path.abspath(__file__)))
+
+# Wersje do 1.1 trzymaly ustawienia obok pliku exe - stamtad je przenosimy.
+STARY_CONFIG = os.path.join(KATALOG_PROGRAMU, "config.json")
 
 DEFAULTS = {
     "wodaMinuty": 30,
@@ -50,10 +55,104 @@ DEFAULTS = {
     "cichaPoraWlaczona": False,
     "cichaPoraOd": 22,
     "cichaPoraDo": 7,
+    "bezczynnoscWlaczona": True,
+    "bezczynnoscMinuty": 5,
+    "szanujPelnyEkran": True,
 }
+
+# Odstep miedzy tikami wiekszy niz to znaczy, ze proces byl zamrozony.
+PROG_WZNOWIENIA = 90
+
+# Dopuszczalne zakresy - jedno zrodlo prawdy dla pliku i okna ustawien.
+LIMITY = {
+    "wodaMinuty": (1, 600),
+    "przerwaMinuty": (1, 600),
+    "przerwaDlugoscMinut": (1, 120),
+    "drzemkaMinuty": (1, 120),
+    "cichaPoraOd": (0, 23),
+    "cichaPoraDo": (0, 23),
+    "bezczynnoscMinuty": (1, 120),
+}
+
+# O tyle odkladamy przypomnienie, gdy akurat nie wypada przeszkadzac.
+ODROCZENIE = 60
+
+# Paleta w jednym miejscu - wczesniej te same kolory byly wpisane w osmiu.
+TLO = "#1b2838"
+TEKST = "#ffffff"
+OPIS = "#a8c0d6"
+AKCENT = "#3498db"
+POLE = "#2c3e50"
+PRZYCISK = "#34495e"
+BLAD = "#e74c3c"
+
+log = logging.getLogger(APP_NAME)
+
+
+# --- logowanie ------------------------------------------------------------
+
+def uruchom_logowanie():
+    """Bez logu kazda cicha awaria u uzytkownika jest nie do odtworzenia."""
+    try:
+        os.makedirs(DANE_DIR, exist_ok=True)
+        uchwyt = RotatingFileHandler(LOG_PATH, maxBytes=256 * 1024, backupCount=1,
+                                     encoding="utf-8")
+        uchwyt.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        log.addHandler(uchwyt)
+        log.setLevel(logging.INFO)
+    except OSError:
+        log.addHandler(logging.NullHandler())  # brak logu nie moze blokowac programu
+
+    def zglos_wyjatek(typ, wartosc, slad):
+        log.critical("Nieobsluzony wyjatek", exc_info=(typ, wartosc, slad))
+
+    sys.excepthook = zglos_wyjatek
+    log.info("Start %s %s (msix=%s, frozen=%s)", APP_NAME, __version__, MSIX, FROZEN)
 
 
 # --- konfiguracja ---------------------------------------------------------
+
+def zapisz_config(cfg):
+    """Zapis atomowy - przerwany zapis nie zostawia obcietego pliku.
+
+    Zwraca True/False zamiast rzucac: brak prawa zapisu nie moze zabic startu.
+    """
+    try:
+        os.makedirs(DANE_DIR, exist_ok=True)
+        tymczasowy = CONFIG_PATH + ".tmp"
+        with open(tymczasowy, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tymczasowy, CONFIG_PATH)
+        return True
+    except OSError as e:
+        log.error("Nie udalo sie zapisac ustawien: %s", e)
+        return False
+
+
+def odloz_uszkodzony_config():
+    """Uszkodzonego pliku nie kasujemy po cichu - odkladamy go obok."""
+    try:
+        os.replace(CONFIG_PATH, CONFIG_PATH + ".uszkodzony")
+        log.warning("Uszkodzony plik odlozony jako config.json.uszkodzony")
+    except OSError as e:
+        log.error("Nie udalo sie odlozyc uszkodzonego pliku: %s", e)
+
+
+def migruj_stary_config():
+    """Przenosi ustawienia ze starej lokalizacji (obok exe) - jednorazowo."""
+    if os.path.exists(CONFIG_PATH) or not os.path.exists(STARY_CONFIG):
+        return
+    try:
+        with open(STARY_CONFIG, encoding="utf-8") as f:
+            dane = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        log.warning("Nie udalo sie odczytac starych ustawien: %s", e)
+        return
+    if zapisz_config(dane):
+        log.info("Przeniesiono ustawienia ze starej lokalizacji")
+
 
 def wczytaj_config():
     cfg = dict(DEFAULTS)
@@ -62,22 +161,28 @@ def wczytaj_config():
             cfg.update(json.load(f))
     except FileNotFoundError:
         zapisz_config(cfg)
-    except (json.JSONDecodeError, OSError):
-        pass
+    except json.JSONDecodeError as e:
+        log.warning("Uszkodzony config.json (%s) - wracam do domyslnych", e)
+        odloz_uszkodzony_config()
+        zapisz_config(cfg)
+    except OSError as e:
+        log.warning("Nie moge odczytac ustawien: %s", e)
+
     for k, v in DEFAULTS.items():
         if isinstance(v, bool):
             cfg[k] = bool(cfg.get(k, v))
-        else:
-            try:
-                cfg[k] = max(1, int(cfg.get(k, v))) if "Minut" in k else int(cfg.get(k, v))
-            except (TypeError, ValueError):
-                cfg[k] = v
+            continue
+        try:
+            liczba = int(cfg.get(k, v))
+        except (TypeError, ValueError):
+            log.warning("Wartosc %s nie jest liczba - biore domyslna", k)
+            cfg[k] = v
+            continue
+        dol, gora = LIMITY.get(k, (liczba, liczba))
+        if not dol <= liczba <= gora:
+            log.warning("Wartosc %s=%s poza zakresem %s-%s - przycinam", k, liczba, dol, gora)
+        cfg[k] = min(max(liczba, dol), gora)
     return cfg
-
-
-def zapisz_config(cfg):
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
 
 
 # --- autostart ------------------------------------------------------------
@@ -88,7 +193,7 @@ def polecenie_autostartu():
     pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
     if not os.path.exists(pythonw):
         pythonw = sys.executable
-    return f'"{pythonw}" "{os.path.join(BASE_DIR, "przypominacz.py")}"'
+    return f'"{pythonw}" "{os.path.join(KATALOG_PROGRAMU, "przypominacz.py")}"'
 
 
 def wpis_autostartu():
@@ -150,6 +255,36 @@ def napraw_autostart():
             pass
 
 
+# --- stan uzytkownika i systemu ---------------------------------------------
+
+def sekundy_bezczynnosci():
+    """Ile sekund bez ruchu myszy i klawiatury w calej sesji Windows."""
+    import ctypes
+
+    class OSTATNIE_WEJSCIE(ctypes.Structure):
+        _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
+
+    info = OSTATNIE_WEJSCIE()
+    info.cbSize = ctypes.sizeof(info)
+    if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(info)):
+        return 0.0
+    teraz = ctypes.windll.kernel32.GetTickCount()
+    # Licznik tikow przekreca sie po ~49 dniach pracy systemu.
+    return ((teraz - info.dwTime) % 2 ** 32) / 1000.0
+
+
+def mozna_przeszkadzac():
+    """False w prezentacji, pelnym ekranie, trybie skupienia i przy zablokowanym ekranie."""
+    import ctypes
+    stan = ctypes.c_int()
+    try:
+        if ctypes.windll.shell32.SHQueryUserNotificationState(ctypes.byref(stan)) != 0:
+            return True  # nie wiemy, co sie dzieje - lepiej przypomniec
+    except (AttributeError, OSError):
+        return True
+    return stan.value == 5  # QUNS_ACCEPTS_NOTIFICATIONS
+
+
 # --- ikona ----------------------------------------------------------------
 
 def zrob_ikone(kolor):
@@ -168,6 +303,8 @@ IKONA_PAUZA = zrob_ikone((127, 140, 141, 255))
 # --- aplikacja ------------------------------------------------------------
 
 class Przypominacz:
+    byl_nieobecny = 0.0  # najdluzsza bezczynnosc w trwajacej wlasnie nieobecnosci
+
     def __init__(self):
         self.cfg = wczytaj_config()
         self.pauza = False
@@ -180,6 +317,7 @@ class Przypominacz:
 
         self.reset_wody()
         self.reset_przerwy()
+        self.ostatni_tik = time.time()
 
         napraw_autostart()
 
@@ -189,11 +327,21 @@ class Przypominacz:
         self.root.after(200, self.tik)
 
     # --- liczniki ---
+    # Liczymy do terminu wg zegara, nie przez odejmowanie sekund w kazdym tiku.
+    # Licznik tikow gubil caly czas uspienia komputera i dryfowal ~27 s/godzine.
     def reset_wody(self):
-        self.woda_sek = self.cfg["wodaMinuty"] * 60
+        self.woda_do = time.time() + self.cfg["wodaMinuty"] * 60
 
     def reset_przerwy(self):
-        self.przerwa_sek = self.cfg["przerwaMinuty"] * 60
+        self.przerwa_do = time.time() + self.cfg["przerwaMinuty"] * 60
+
+    @property
+    def woda_sek(self):
+        return max(0, int(round(self.woda_do - time.time())))
+
+    @property
+    def przerwa_sek(self):
+        return max(0, int(round(self.przerwa_do - time.time())))
 
     @staticmethod
     def fmt(sek):
@@ -237,21 +385,68 @@ class Przypominacz:
             except Exception as e:  # zadna akcja z menu nie moze umrzec po cichu
                 self.powiadom("Blad", f"{cmd}: {e}")
 
-        if not self.pauza:
-            self.woda_sek -= 1
-            self.przerwa_sek -= 1
-            if self.woda_sek <= 0:
-                self.reset_wody()
-                if not self.cicha_pora():
-                    self.przypomnij_wode()
-            if self.przerwa_sek <= 0:
-                self.reset_przerwy()
-                if not self.cicha_pora():
-                    self.pokaz_przerwe()
+        teraz = time.time()
+        odstep = teraz - self.ostatni_tik
+        self.ostatni_tik = teraz
+
+        if odstep > PROG_WZNOWIENIA:
+            # Proces stal: uspienie, hibernacja albo przestawiony zegar.
+            # Nie wyrzucamy zaleglych przypomnien - zaczynamy odliczanie od nowa.
+            log.info("Przerwa w dzialaniu %.0f s - licze od nowa", odstep)
+            self.reset_wody()
+            self.reset_przerwy()
+        elif self.pauza:
+            # W pauzie terminy przesuwaja sie razem z zegarem, wiec nie zapadaja.
+            self.woda_do += odstep
+            self.przerwa_do += odstep
+        elif self.nieobecny(odstep):
+            pass  # czas nieobecnosci nie liczy sie do przypomnien
+        else:
+            if teraz >= self.woda_do:
+                self.wyzwol(self.przypomnij_wode, self.reset_wody, "woda_do")
+            if teraz >= self.przerwa_do:
+                self.wyzwol(self.pokaz_przerwe, self.reset_przerwy, "przerwa_do")
 
         stan = "PAUZA" if self.pauza else f"woda {self.fmt(self.woda_sek)} | przerwa {self.fmt(self.przerwa_sek)}"
         self.ikona.title = f"{APP_NAME} - {stan}"
         self.root.after(1000, self.tik)
+
+    def nieobecny(self, odstep):
+        """Czy uzytkownika nie ma przy komputerze - wtedy liczniki stoja.
+
+        Przypominanie o wodzie pustemu krzeslu nie ma sensu, a po powrocie
+        uzytkownik dostawal alarm w pierwszej minucie pracy.
+        """
+        if not self.cfg["bezczynnoscWlaczona"]:
+            return False
+
+        bezczynny = sekundy_bezczynnosci()
+        if bezczynny >= self.cfg["bezczynnoscMinuty"] * 60:
+            self.woda_do += odstep
+            self.przerwa_do += odstep
+            self.byl_nieobecny = max(self.byl_nieobecny, bezczynny)
+            return True
+
+        if self.byl_nieobecny:
+            # Odejscie dluzsze niz przerwa jest przerwa - nie zaganiamy do kolejnej.
+            if self.byl_nieobecny >= self.cfg["przerwaDlugoscMinut"] * 60:
+                log.info("Nieobecnosc %.0f min - licze przerwe jako zrobiona",
+                         self.byl_nieobecny / 60)
+                self.reset_przerwy()
+            self.byl_nieobecny = 0.0
+        return False
+
+    def wyzwol(self, akcja, reset, termin):
+        """Wywoluje przypomnienie albo odklada je, jesli teraz nie wypada."""
+        if self.cicha_pora():
+            reset()
+            return
+        if self.cfg["szanujPelnyEkran"] and not mozna_przeszkadzac():
+            # Prezentacja, gra, rozmowa wideo: odkladamy, nie gubimy.
+            setattr(self, termin, time.time() + ODROCZENIE)
+            return
+        reset()
+        akcja()
 
     def obsluz(self, cmd):
         if cmd == "woda":
@@ -304,7 +499,6 @@ class Przypominacz:
             self.okno_ustawien.focus_force()
             return
 
-        TLO, TEKST, OPIS, AKCENT = "#1b2838", "#ffffff", "#a8c0d6", "#3498db"
         win = tk.Toplevel(self.root)
         self.okno_ustawien = win
         win.title(f"{APP_NAME} - ustawienia")
@@ -312,7 +506,7 @@ class Przypominacz:
         win.attributes("-topmost", True)
         win.resizable(False, False)
 
-        szer, wys = 420, 400
+        szer, wys = 420, 530
         x = (win.winfo_screenwidth() - szer) // 2
         y = (win.winfo_screenheight() - wys) // 3
         win.geometry(f"{szer}x{wys}+{x}+{y}")
@@ -333,61 +527,85 @@ class Przypominacz:
         siatka.pack(padx=26, fill="x")
 
         zmienne = {}
+        etykiety = {}
 
-        def pole(wiersz, etykieta, klucz, od, do):
+        def pole(wiersz, etykieta, klucz):
+            dol, gora = LIMITY[klucz]
+            etykiety[klucz] = etykieta
             tk.Label(siatka, text=etykieta, bg=TLO, fg=OPIS, font=("Segoe UI", 10),
                      anchor="w").grid(row=wiersz, column=0, sticky="w", pady=5)
             v = tk.StringVar(value=str(self.cfg[klucz]))
             zmienne[klucz] = v
-            tk.Spinbox(siatka, from_=od, to=do, textvariable=v, width=6, justify="center",
-                       font=("Segoe UI", 10), relief="flat", bg="#2c3e50", fg=TEKST,
-                       buttonbackground="#34495e", insertbackground=TEKST).grid(
+            tk.Spinbox(siatka, from_=dol, to=gora, textvariable=v, width=6, justify="center",
+                       font=("Segoe UI", 10), relief="flat", bg=POLE, fg=TEKST,
+                       buttonbackground=PRZYCISK, insertbackground=TEKST).grid(
                 row=wiersz, column=1, sticky="e", pady=5)
 
         siatka.columnconfigure(0, weight=1)
-        pole(0, "Woda co ile minut", "wodaMinuty", 1, 600)
-        pole(1, "Przerwa co ile minut", "przerwaMinuty", 1, 600)
-        pole(2, "Dlugosc przerwy (minuty)", "przerwaDlugoscMinut", 1, 120)
-        pole(3, "Drzemka - odloz o (minuty)", "drzemkaMinuty", 1, 120)
+        pole(0, "Woda co ile minut", "wodaMinuty")
+        pole(1, "Przerwa co ile minut", "przerwaMinuty")
+        pole(2, "Dlugosc przerwy (minuty)", "przerwaDlugoscMinut")
+        pole(3, "Drzemka - odloz o (minuty)", "drzemkaMinuty")
 
         dzwiek = tk.BooleanVar(value=self.cfg["dzwiek"])
         cisza = tk.BooleanVar(value=self.cfg["cichaPoraWlaczona"])
         for wiersz, (txt, var) in enumerate([("Dzwiek przy przypomnieniach", dzwiek),
                                              ("Cicha pora (bez przypomnien)", cisza)], start=4):
-            tk.Checkbutton(siatka, text=txt, variable=var, bg=TLO, fg=OPIS, selectcolor="#2c3e50",
+            tk.Checkbutton(siatka, text=txt, variable=var, bg=TLO, fg=OPIS, selectcolor=POLE,
                            activebackground=TLO, activeforeground=TEKST, font=("Segoe UI", 10),
                            anchor="w", highlightthickness=0, bd=0).grid(
                 row=wiersz, column=0, columnspan=2, sticky="w", pady=3)
 
-        pole(6, "Cicha pora od godziny", "cichaPoraOd", 0, 23)
-        pole(7, "Cicha pora do godziny", "cichaPoraDo", 0, 23)
+        pole(6, "Cicha pora od godziny", "cichaPoraOd")
+        pole(7, "Cicha pora do godziny", "cichaPoraDo")
 
-        blad = tk.Label(win, text="", bg=TLO, fg="#e74c3c", font=("Segoe UI", 9))
+        bezczynnosc = tk.BooleanVar(value=self.cfg["bezczynnoscWlaczona"])
+        pelny_ekran = tk.BooleanVar(value=self.cfg["szanujPelnyEkran"])
+        for wiersz, (txt, var) in enumerate(
+                [("Wstrzymaj liczenie, gdy odchodze od komputera", bezczynnosc),
+                 ("Nie przerywaj prezentacji i pelnego ekranu", pelny_ekran)], start=8):
+            tk.Checkbutton(siatka, text=txt, variable=var, bg=TLO, fg=OPIS, selectcolor=POLE,
+                           activebackground=TLO, activeforeground=TEKST, font=("Segoe UI", 10),
+                           anchor="w", highlightthickness=0, bd=0).grid(
+                row=wiersz, column=0, columnspan=2, sticky="w", pady=3)
+
+        pole(10, "Nieobecnosc liczy sie po (minuty)", "bezczynnoscMinuty")
+
+        blad = tk.Label(win, text="", bg=TLO, fg=BLAD, font=("Segoe UI", 9), wraplength=360)
         blad.pack(pady=(8, 0))
 
         def zapisz():
             nowy = dict(self.cfg)
             for klucz, v in zmienne.items():
+                dol, gora = LIMITY[klucz]
                 try:
                     liczba = int(v.get())
                 except ValueError:
                     blad.config(text="Wszystkie pola musza byc liczbami.")
                     return
-                if klucz.startswith("cichaPora") and not 0 <= liczba <= 23:
-                    blad.config(text="Godziny cichej pory: 0-23.")
+                if not dol <= liczba <= gora:
+                    # Spinbox ogranicza strzalki, ale nie wpisywanie z klawiatury.
+                    blad.config(text=f"{etykiety[klucz]}: dozwolone {dol}-{gora}, "
+                                     f"a wpisano {liczba}.")
                     return
-                if klucz.endswith("Minuty") or klucz.endswith("Minut"):
-                    if liczba < 1 and not klucz.startswith("cichaPora"):
-                        blad.config(text="Minuty musza byc wieksze od zera.")
-                        return
                 nowy[klucz] = liczba
             nowy["dzwiek"] = dzwiek.get()
             nowy["cichaPoraWlaczona"] = cisza.get()
+            nowy["bezczynnoscWlaczona"] = bezczynnosc.get()
+            nowy["szanujPelnyEkran"] = pelny_ekran.get()
 
-            zapisz_config(nowy)
+            if not zapisz_config(nowy):
+                blad.config(text="Nie udalo sie zapisac ustawien - szczegoly w pliku log.")
+                return
+
+            # Liczniki zerujemy tylko dla interwalu, ktory faktycznie sie zmienil:
+            # zmiana samego dzwieku nie moze kasowac 29 minut odliczania do wody.
+            stary = self.cfg
             self.cfg = wczytaj_config()
-            self.reset_wody()
-            self.reset_przerwy()
+            if self.cfg["wodaMinuty"] != stary["wodaMinuty"]:
+                self.reset_wody()
+            if self.cfg["przerwaMinuty"] != stary["przerwaMinuty"]:
+                self.reset_przerwy()
             zamknij()
             self.powiadom("Ustawienia zapisane",
                           f"Woda co {self.cfg['wodaMinuty']} min, przerwa co {self.cfg['przerwaMinuty']} min.")
@@ -395,9 +613,12 @@ class Przypominacz:
         ramka = tk.Frame(win, bg=TLO)
         ramka.pack(pady=(14, 0))
         tk.Button(ramka, text="Anuluj", width=14, font=("Segoe UI", 10), relief="flat",
-                  bg="#34495e", fg=TEKST, command=zamknij).pack(side="left", padx=6)
+                  bg=PRZYCISK, fg=TEKST, command=zamknij).pack(side="left", padx=6)
         tk.Button(ramka, text="Zapisz", width=14, font=("Segoe UI", 10), relief="flat",
                   bg=AKCENT, fg=TEKST, command=zapisz).pack(side="left", padx=6)
+
+        tk.Label(win, text=f"wersja {__version__}", bg=TLO, fg=PRZYCISK,
+                 font=("Segoe UI", 8)).pack(side="bottom", pady=6)
 
         win.lift()
         win.focus_force()
@@ -412,7 +633,7 @@ class Przypominacz:
         win = tk.Toplevel(self.root)
         self.okno_przerwy = win
         win.title(f"{APP_NAME} - przerwa")
-        win.configure(bg="#1b2838")
+        win.configure(bg=TLO)
         win.attributes("-topmost", True)
         win.resizable(False, False)
         win.protocol("WM_DELETE_WINDOW", lambda: self.zamknij_przerwe(win))
@@ -422,23 +643,23 @@ class Przypominacz:
         y = (win.winfo_screenheight() - wys) // 3
         win.geometry(f"{szer}x{wys}+{x}+{y}")
 
-        tk.Label(win, text="Czas na przerwe", bg="#1b2838", fg="#ffffff",
+        tk.Label(win, text="Czas na przerwe", bg=TLO, fg=TEKST,
                  font=("Segoe UI", 20, "bold")).pack(pady=(26, 4))
         tk.Label(win, text="Wstan, rozciagnij sie, odwroc wzrok od ekranu.",
-                 bg="#1b2838", fg="#a8c0d6", font=("Segoe UI", 11)).pack()
+                 bg=TLO, fg=OPIS, font=("Segoe UI", 11)).pack()
 
         pozostalo = [self.cfg["przerwaDlugoscMinut"] * 60]
-        zegar = tk.Label(win, text=self.fmt(pozostalo[0]), bg="#1b2838", fg="#3498db",
+        zegar = tk.Label(win, text=self.fmt(pozostalo[0]), bg=TLO, fg=AKCENT,
                          font=("Segoe UI", 40, "bold"))
         zegar.pack(pady=10)
 
-        ramka = tk.Frame(win, bg="#1b2838")
+        ramka = tk.Frame(win, bg=TLO)
         ramka.pack(pady=(4, 0))
         tk.Button(ramka, text=f"Odloz o {self.cfg['drzemkaMinuty']} min", width=18,
-                  font=("Segoe UI", 10), relief="flat", bg="#34495e", fg="white",
+                  font=("Segoe UI", 10), relief="flat", bg=PRZYCISK, fg=TEKST,
                   command=lambda: self.drzemka(win)).pack(side="left", padx=6)
         tk.Button(ramka, text="Zamknij", width=14, font=("Segoe UI", 10), relief="flat",
-                  bg="#3498db", fg="white",
+                  bg=AKCENT, fg=TEKST,
                   command=lambda: self.zamknij_przerwe(win)).pack(side="left", padx=6)
 
         def odliczaj():
@@ -456,8 +677,9 @@ class Przypominacz:
             win.after(1000, odliczaj)
 
         win.after(1000, odliczaj)
+        # Samo podniesienie okna. focus_force() wyrywal fokus w trakcie pisania,
+        # a spacja albo Enter trafialy wtedy w przycisk "Zamknij".
         win.lift()
-        win.focus_force()
 
     def zamknij_przerwe(self, win):
         self.okno_przerwy = None
@@ -467,7 +689,7 @@ class Przypominacz:
             pass
 
     def drzemka(self, win):
-        self.przerwa_sek = self.cfg["drzemkaMinuty"] * 60
+        self.przerwa_do = time.time() + self.cfg["drzemkaMinuty"] * 60
         self.zamknij_przerwe(win)
 
     def start(self):
@@ -475,13 +697,24 @@ class Przypominacz:
 
 
 def juz_uruchomiony():
-    """Jedna instancja - drugie uruchomienie po prostu konczy sie po cichu."""
+    """Jedna instancja na sesje uzytkownika.
+
+    Przestrzen Local, nie Global: Global jest wspolna dla calej maszyny, wiec
+    drugi zalogowany uzytkownik nie moglby uruchomic programu u siebie.
+    """
     import ctypes
-    ctypes.windll.kernel32.CreateMutexW(None, False, "Global\\PrzypominaczMutex")
-    return ctypes.windll.kernel32.GetLastError() == 183  # ERROR_ALREADY_EXISTS
+    uchwyt = ctypes.windll.kernel32.CreateMutexW(None, False, "Local\\PrzypominaczMutex")
+    blad = ctypes.windll.kernel32.GetLastError()
+    if not uchwyt:
+        log.warning("Nie udalo sie utworzyc mutexu (blad %s) - pomijam kontrole", blad)
+        return False
+    return blad == 183  # ERROR_ALREADY_EXISTS
 
 
 if __name__ == "__main__":
+    uruchom_logowanie()
     if juz_uruchomiony():
+        log.info("Program juz dziala - koncze te instancje")
         sys.exit(0)
+    migruj_stary_config()
     Przypominacz().start()

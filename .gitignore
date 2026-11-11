@@ -12,3 +12,6 @@ Assets/
 *.cer
 *.pfx
 Zrzuty/
+
+# testy
+.pytest_cache/

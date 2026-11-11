@@ -18,7 +18,12 @@ i o 5-minutowej przerwie od komputera.
   - **Ustawienia…** — okienko z polami (bez grzebania w pliku),
   - „Uruchamiaj z Windows" (przełącznik autostartu),
   - Zakończ.
-- Jedna instancja naraz, cicha pora (opcjonalnie).
+- **Nie przeszkadza, gdy nie powinien:**
+  - odejście od komputera wstrzymuje liczniki, a dłuższa nieobecność liczy się
+    jako przerwa — po powrocie nie wita Cię alarm;
+  - prezentacja, gra i pełny ekran odraczają przypomnienie zamiast je wycinać;
+  - cicha pora wycisza wszystko w wybranych godzinach.
+- Jedna instancja na sesję użytkownika.
 
 ## Instalacja
 
@@ -35,10 +40,11 @@ Pythona ani instalatora — dwuklik i ikona ląduje w trayu. Ta wersja nie jest
 podpisana certyfikatem, więc przy pierwszym uruchomieniu Windows SmartScreen
 może ostrzec („Więcej informacji" → „Uruchom mimo to").
 
-W wersji z pliku exe autostart włączasz w menu trayu (**Uruchamiaj z Windows**) — dodaje wpis do
-`HKCU\...\CurrentVersion\Run` i potwierdza to powiadomieniem. Exe można trzymać
-gdziekolwiek (`config.json` tworzy się obok niego); po przeniesieniu pliku
-program sam naprawia wpis autostartu przy najbliższym uruchomieniu.
+W wersji z pliku exe autostart włączasz w menu trayu (**Uruchamiaj z Windows**) —
+dodaje wpis do `HKCU\...\CurrentVersion\Run` i potwierdza to powiadomieniem.
+Exe można trzymać gdziekolwiek, także w katalogu tylko do odczytu; po
+przeniesieniu pliku program sam naprawia wpis autostartu przy najbliższym
+uruchomieniu.
 
 Nie trzeba (i nie warto) wrzucać niczego do folderu Autostart ręcznie —
 jeśli tam wcześniej trafił skrót, włączenie autostartu z menu go usuwa, żeby
@@ -49,9 +55,13 @@ każdym logowaniu w Notatniku.
 ## Ustawienia
 
 Prawy klik na ikonę → **Ustawienia…** Okienko ma pola na wszystkie opcje,
-przycisk **Zapisz** od razu je stosuje (liczniki startują od nowa), **Anuluj**
-porzuca zmiany. Wartości lądują w `config.json` — w wersji ze Sklepu
-w `%LOCALAPPDATA%\Przypominacz\`, w wersji z pliku exe obok programu:
+przycisk **Zapisz** od razu je stosuje, **Anuluj** porzuca zmiany. Zmiana
+interwału zeruje tylko ten jeden licznik — przełączenie dźwięku nie kasuje
+rozpoczętego odliczania.
+
+Ustawienia i log obu wersji leżą w **`%LOCALAPPDATA%\Przypominacz\`**
+(`config.json`, `przypominacz.log`). Ustawienia z wersji sprzed 1.2, które
+leżały obok pliku exe, przenoszą się tam same przy pierwszym uruchomieniu.
 
 | Klucz | Znaczenie | Domyślnie |
 |---|---|---|
@@ -62,9 +72,23 @@ w `%LOCALAPPDATA%\Przypominacz\`, w wersji z pliku exe obok programu:
 | `dzwiek` | dźwięk przy powiadomieniach | true |
 | `cichaPoraWlaczona` | wyciszenie w godzinach nocnych | false |
 | `cichaPoraOd` / `cichaPoraDo` | zakres cichej pory (godziny) | 22 / 7 |
+| `bezczynnoscWlaczona` | wstrzymaj liczniki, gdy nie ma Cię przy komputerze | true |
+| `bezczynnoscMinuty` | po ilu minutach bez myszy i klawiatury uznać nieobecność | 5 |
+| `szanujPelnyEkran` | odraczaj przypomnienia w prezentacji i pełnym ekranie | true |
+
+Wartości spoza dozwolonego zakresu są przycinane przy wczytywaniu, a uszkodzony
+plik odkładany jako `config.json.uszkodzony` — program startuje na domyślnych
+zamiast nie wstać wcale.
 
 Plik można też edytować ręcznie, ale wtedy zmiany wejdą dopiero po restarcie
 aplikacji — okienko jest wygodniejsze.
+
+## Diagnostyka
+
+Gdy coś nie działa, zajrzyj do `%LOCALAPPDATA%\Przypominacz\przypominacz.log`.
+Zapisują się tam start programu z numerem wersji, nieudane zapisy ustawień,
+uszkodzony plik konfiguracji, wykryte wybudzenie komputera oraz każdy
+nieobsłużony wyjątek.
 
 ## Wersja MSIX (Sklep Windows)
 
@@ -91,6 +115,16 @@ model MSIX:
 Logotypy pakietu generuje [Zrob-assety.py](Zrob-assety.py) z tej samej kropli,
 co ikona w trayu — folder `Assets` nie jest trzymany w repo.
 
+## Testy
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests -q
+```
+
+53 testy pokrywają wczytywanie i zapis ustawień (w tym katalog bez prawa
+zapisu i uszkodzony JSON), odliczanie wobec zegara, wybudzenie komputera,
+pauzę, cichą porę, autostart w rejestrze oraz oba okna.
+
 ## Budowanie ze źródeł
 
 Wymagany Python 3.10+ na Windows (testowane na 3.13 z python.org).
@@ -109,8 +143,10 @@ budowania: `.\.venv\Scripts\pythonw.exe przypominacz.py`.
 Techniczne szczegóły:
 
 - czysty Python + `tkinter` (okna), `pystray` (tray), `Pillow` (ikona),
-  `winsound` i `winreg` ze standardowej biblioteki — tylko Windows,
-- jedna instancja pilnowana nazwanym mutexem,
+  `winsound`, `winreg` i `ctypes` ze standardowej biblioteki — tylko Windows,
+- odliczanie do terminu wg zegara, więc uśpienie komputera nie gubi czasu,
+- jedna instancja pilnowana mutexem w przestrzeni `Local` (per sesja),
+- numer wersji pochodzi z `__version__` i trafia do zasobów exe oraz manifestu,
 - autostart: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` → `Przypominacz`.
 
 ## Licencja

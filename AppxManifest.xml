@@ -9,7 +9,7 @@
   <Identity
     Name="MarekZettel-zetmar.Przypominacz"
     Publisher="CN=15A53D32-C868-48EE-B700-5DBB5449CA1B"
-    Version="1.1.0.0"
+    Version="1.2.0.0"
     ProcessorArchitecture="x64" />
 
   <Properties>
